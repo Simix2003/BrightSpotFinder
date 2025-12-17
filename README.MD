@@ -21,3 +21,11 @@ n: save + next image
 p: save + previous image
 
 q: save + quit
+
+
+
+# Mirror the dataset (creates 4x the images)
+python mirror_dataset.py --dataset "D:\Imix\Lavori\Capgemini\3SUN\BrightSpotFinder\YoloDataset2"
+
+# Visualize the dataset
+python visualize_dataset.py --dataset "D:\Imix\Lavori\Capgemini\3SUN\BrightSpotFinder\YoloDataset2"
