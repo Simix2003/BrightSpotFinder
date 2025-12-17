@@ -352,6 +352,60 @@ def save_reference_debug_artifacts(
     print(f"  [DEBUG] {'='*70}\n", file=sys.stderr)
 
 
+def generate_residual_image_simple(
+    image_path: Path,
+    output_dir: Path,
+    blur_ksize: int = 51,
+    percentile: float = 99.7,
+    min_residual: int = 10,
+    morph_ksize: int = 3,
+) -> bool:
+    """Load image, compute residual, and save it. Simple version without crops.
+    
+    Args:
+        image_path: Path to input image
+        output_dir: Directory to save residual image
+        blur_ksize: Gaussian blur kernel size (will be made odd if needed)
+        percentile: Percentile for adaptive threshold (unused, kept for compatibility)
+        min_residual: Minimum residual value floor (unused, kept for compatibility)
+        morph_ksize: Morphology kernel size (unused, kept for compatibility)
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    if not USE_OPENCV:
+        return False
+    
+    # Ensure blur kernel size is odd
+    if blur_ksize < 3:
+        blur_ksize = 3
+    if blur_ksize % 2 == 0:
+        blur_ksize += 1
+    
+    # Load image as grayscale
+    gray_np, _ = load_image_optimized(image_path, as_grayscale=True)
+    
+    # Compute residual
+    background = cv2.GaussianBlur(gray_np, (blur_ksize, blur_ksize), 0)
+    residual = cv2.subtract(gray_np, background)
+    residual = np.clip(residual, 0, 255).astype(np.uint8)
+    
+    # Normalize residual for visualization
+    if residual.max() > residual.min():
+        residual_norm = ((residual - residual.min()) / (residual.max() - residual.min() + 1e-6) * 255).astype(np.uint8)
+    else:
+        residual_norm = residual.astype(np.uint8)
+    
+    # Create output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save residual image
+    output_path = output_dir / f"{image_path.stem}_residual.png"
+    success = cv2.imwrite(str(output_path), residual_norm)
+    
+    return success
+
+
 def save_debug_artifacts(
     output_dir: Path,
     image_name: str,

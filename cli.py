@@ -8,6 +8,7 @@ from typing import Dict, List
 
 from batch import process_batch
 from config import load_crops, save_crops
+from detection import generate_residual_image_simple
 from image_io import USE_OPENCV, iter_images
 from interactive import define_crops_interactive, tune_residual_params_interactive
 from progress import ProgressRenderer
@@ -160,14 +161,34 @@ def parse_args() -> argparse.Namespace:
         default=50,
         help="Maximum number of images to generate debug artifacts for (when --debug-reference is used).",
     )
+    parser.add_argument(
+        "--generate-residuals",
+        type=Path,
+        metavar="FOLDER",
+        help="Generate residual images for all images in the specified folder. Processes the full image (no crops). Outputs to 'residuals_output' subdirectory (or use --output-dir to specify custom location).",
+    )
     
     args = parser.parse_args()
+    
+    # If generate-residuals is specified, we'll handle it separately
+    generate_residuals_mode = args.generate_residuals is not None
+    if generate_residuals_mode:
+        if not args.generate_residuals.exists():
+            parser.error(f"--generate-residuals folder does not exist: {args.generate_residuals}")
+        if not args.generate_residuals.is_dir():
+            parser.error(f"--generate-residuals is not a directory: {args.generate_residuals}")
+        if not USE_OPENCV:
+            parser.error("--generate-residuals requires OpenCV. Install with: pip install opencv-python")
+        # Set output directory to residuals subfolder if not explicitly set
+        if args.output_dir == Path("output"):
+            args.output_dir = args.generate_residuals / "residuals_output"
     
     # If residual-only mode, force detector to residual and enable debug
     if args.residual_only:
         args.detector = "residual"
         args.debug_residual = True
-        args.debug_max = 999999  # Process all images
+        if args.debug_max == 50:  # Only override if using default
+            args.debug_max = 999999  # Process all images
     
     # Validation
     if args.resid_blur_ksize < 3:
@@ -206,6 +227,46 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     """Main entry point for CLI."""
     args = parse_args()
+
+    # Handle generate-residuals mode - simple path that just generates residuals
+    if args.generate_residuals is not None:
+        if not USE_OPENCV:
+            print("ERROR: --generate-residuals requires OpenCV. Install with: pip install opencv-python", file=sys.stderr)
+            return 1
+        
+        # Get all images in the folder
+        image_paths = list(iter_images(args.generate_residuals))
+        if not image_paths:
+            print(f"No images found in {args.generate_residuals}", file=sys.stderr)
+            return 1
+        
+        # Create output directory
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Process each image
+        successful = 0
+        failed = 0
+        
+        print(f"Generating residual images for {len(image_paths)} image(s)...")
+        for image_path in image_paths:
+            success = generate_residual_image_simple(
+                image_path=image_path,
+                output_dir=args.output_dir,
+                blur_ksize=args.resid_blur_ksize,
+                percentile=args.resid_percentile,
+                min_residual=args.resid_min,
+                morph_ksize=args.resid_morph_ksize,
+            )
+            if success:
+                successful += 1
+                print(f"  ✓ {image_path.name}")
+            else:
+                failed += 1
+                print(f"  ✗ {image_path.name} (failed)", file=sys.stderr)
+        
+        print(f"\nCompleted: {successful} successful, {failed} failed")
+        print(f"Residual images saved to: {args.output_dir}")
+        return 0 if failed == 0 else 1
 
     if args.tune_residual:
         # Interactive parameter tuning mode
@@ -357,8 +418,11 @@ def main() -> int:
         debug_dir = args.output_dir / "debug_residual"
         print(
             f"Processed {summary['processed']} image(s). "
-            f"Residual debug images saved to {debug_dir}."
+            f"Residual images saved to {debug_dir}."
         )
+        if args.generate_residuals is not None:
+            print(f"Input folder: {args.generate_residuals}")
+            print(f"Output folder: {args.output_dir}")
     elif args.detector == "reference-residual" and args.debug_reference:
         debug_dir = args.output_dir / "debug_reference"
         # Check if debug folder exists and has files
