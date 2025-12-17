@@ -5,8 +5,10 @@ from pathlib import Path
 import shutil
 
 MODEL_PATH = "Models/yolov8n_residual/weights/best.pt"
-IMAGE_DIR = "D:/Imix/Lavori/Capgemini/3SUN/Immagini/IMAGE/TEST"
-OUT_DIR = "D:/Imix/Lavori/Capgemini/3SUN/Immagini/IMAGE/OUTPUT"
+#IMAGE_DIR = "D:/Imix/Lavori/Capgemini/3SUN/Immagini/IMAGE/TEST"
+#OUT_DIR = "D:/Imix/Lavori/Capgemini/3SUN/Immagini/IMAGE/OUTPUT"
+IMAGE_DIR = "D:/Imix/Lavori/Capgemini/3SUN/Immagini/immagini_1"
+OUT_DIR = "D:/Imix/Lavori/Capgemini/3SUN/Immagini/immagini_1_output"
 
 # Create output directories
 images_dir = os.path.join(OUT_DIR, "Image")
