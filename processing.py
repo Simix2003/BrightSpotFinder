@@ -1,7 +1,8 @@
 """Core processing pipeline functions."""
 
+import sys
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
@@ -81,6 +82,12 @@ def process_image(
     debug_residual: bool = False,
     debug_max: int = 50,
     output_dir: Optional[Path] = None,
+    good_images_dir: Optional[Path] = None,
+    reference_diff_percentile: float = 99.5,
+    reference_diff_min: int = 5,
+    debug_reference: bool = False,
+    debug_reference_max: int = 50,
+    reference_model: Optional[Dict[int, np.ndarray]] = None,
 ) -> Tuple[Optional[Image.Image], List]:
     """Process a single image for bright spot detection.
     
@@ -100,6 +107,11 @@ def process_image(
         area_unit: Unit for area threshold ("mm" for mm² or "cm" for cm²)
         dbscan_eps_mm: DBSCAN distance threshold in mm (default: 2.0mm)
         dbscan_min_samples: DBSCAN minimum samples per cluster (default: 3)
+        good_images_dir: Directory containing GOOD reference images (for reference-residual detector)
+        reference_diff_percentile: Percentile for thresholding difference image (0-100)
+        reference_diff_min: Minimum difference threshold floor
+        debug_reference: Enable debug output for reference-residual method
+        debug_reference_max: Maximum number of images to generate debug artifacts for
     
     Returns:
         Tuple of (pil_image, results)
@@ -124,6 +136,11 @@ def process_image(
     
     # Perform detection on numpy array (fast, memory-efficient)
     image_name = path.stem if path else None
+    
+    # Debug output to trace debug_reference flag
+    if detector == "reference-residual":
+        print(f"[DEBUG] process_image: detector={detector}, debug_reference={debug_reference}, output_dir={output_dir}, image_name={image_name}, reference_model is None={reference_model is None}", file=sys.stderr)
+    
     results = detect_bright_spots(
         gray_np,
         effective_crops,
@@ -146,6 +163,12 @@ def process_image(
         output_dir=output_dir,
         image_name=image_name,
         calculate_pixel_to_mm_ratio_func=calculate_pixel_to_mm_ratio,
+        good_images_dir=good_images_dir,
+        reference_diff_percentile=reference_diff_percentile,
+        reference_diff_min=reference_diff_min,
+        debug_reference=debug_reference,
+        debug_reference_max=debug_reference_max,
+        reference_model=reference_model,
     )
     
     # Load PIL image only if requested (for annotation)

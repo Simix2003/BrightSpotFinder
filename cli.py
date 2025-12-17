@@ -71,9 +71,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--detector",
         type=str,
-        choices=["threshold", "residual"],
+        choices=["threshold", "residual", "reference-residual"],
         default="threshold",
-        help="Detection method: 'threshold' (fixed threshold) or 'residual' (background subtraction).",
+        help="Detection method: 'threshold' (fixed threshold), 'residual' (background subtraction), or 'reference-residual' (compare against GOOD reference images).",
     )
     parser.add_argument(
         "--resid-blur-ksize",
@@ -132,6 +132,34 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Crop index to use for tuning (when --tune-residual is used, default: 0).",
     )
+    parser.add_argument(
+        "--good-images-dir",
+        type=Path,
+        help="Directory containing GOOD reference images (required when --detector=reference-residual).",
+    )
+    parser.add_argument(
+        "--reference-diff-percentile",
+        type=float,
+        default=99.5,
+        help="Percentile for thresholding difference image in reference-residual method (0-100).",
+    )
+    parser.add_argument(
+        "--reference-diff-min",
+        type=int,
+        default=5,
+        help="Minimum difference threshold floor for reference-residual method.",
+    )
+    parser.add_argument(
+        "--debug-reference",
+        action="store_true",
+        help="Enable debug output for reference-residual method (saves intermediate images and prints statistics).",
+    )
+    parser.add_argument(
+        "--debug-reference-max",
+        type=int,
+        default=50,
+        help="Maximum number of images to generate debug artifacts for (when --debug-reference is used).",
+    )
     
     args = parser.parse_args()
     
@@ -156,6 +184,21 @@ def parse_args() -> argparse.Namespace:
     if args.resid_morph_ksize % 2 == 0:
         args.resid_morph_ksize += 1  # Make odd
         print(f"Warning: --resid-morph-ksize adjusted to {args.resid_morph_ksize} (must be odd)", file=sys.stderr)
+    
+    # Validation for reference-residual detector
+    if args.detector == "reference-residual":
+        if args.good_images_dir is None:
+            parser.error("--good-images-dir is required when --detector=reference-residual")
+        if not args.good_images_dir.exists():
+            parser.error(f"--good-images-dir does not exist: {args.good_images_dir}")
+        if not args.good_images_dir.is_dir():
+            parser.error(f"--good-images-dir is not a directory: {args.good_images_dir}")
+        if not USE_OPENCV:
+            parser.error("reference-residual detector requires OpenCV. Install with: pip install opencv-python")
+    
+    if args.reference_diff_percentile is not None:
+        if not (0 <= args.reference_diff_percentile <= 100):
+            parser.error("--reference-diff-percentile must be in range [0, 100]")
     
     return args
 
@@ -262,6 +305,11 @@ def main() -> int:
                     debug_residual=args.debug_residual,
                     debug_max=args.debug_max,
                     residual_only=args.residual_only,
+                    good_images_dir=args.good_images_dir,
+                    reference_diff_percentile=args.reference_diff_percentile,
+                    reference_diff_min=args.reference_diff_min,
+                    debug_reference=args.debug_reference,
+                    debug_reference_max=args.debug_reference_max,
                 )
                 all_details.extend(summary.get("details", []))
                 all_found.extend(summary.get("found_filenames", []))
@@ -276,6 +324,7 @@ def main() -> int:
             return 0
 
         # No batching: regular single run
+        print(f"[DEBUG] CLI: args.debug_reference={args.debug_reference}, args.detector={args.detector}", file=sys.stderr)
         summary = process_batch(
             images_dir=args.images_dir,
             output_dir=args.output_dir,
@@ -294,6 +343,11 @@ def main() -> int:
             debug_residual=args.debug_residual,
             debug_max=args.debug_max,
             residual_only=args.residual_only,
+            good_images_dir=args.good_images_dir,
+            reference_diff_percentile=args.reference_diff_percentile,
+            reference_diff_min=args.reference_diff_min,
+            debug_reference=args.debug_reference,
+            debug_reference_max=args.debug_reference_max,
         )
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
@@ -305,6 +359,25 @@ def main() -> int:
             f"Processed {summary['processed']} image(s). "
             f"Residual debug images saved to {debug_dir}."
         )
+    elif args.detector == "reference-residual" and args.debug_reference:
+        debug_dir = args.output_dir / "debug_reference"
+        # Check if debug folder exists and has files
+        debug_files = list(debug_dir.glob("*.png")) if debug_dir.exists() else []
+        print(
+            f"Processed {summary['processed']} image(s). "
+            f"Reference-residual debug folder: {debug_dir}"
+        )
+        if debug_files:
+            print(f"  Saved {len(debug_files)} debug image(s) to {debug_dir}")
+        else:
+            print(f"  Warning: Debug folder exists but no images were saved. Check debug conditions.")
+        if summary.get('with_bright', 0) > 0:
+            noted_dir = args.output_dir / "Noted"
+            images_dir_out = args.output_dir / "Images"
+            print(
+                f"Detected {summary['with_bright']} image(s) with bright spots. "
+                f"Annotated copies in {noted_dir}, originals in {images_dir_out}, summary.csv in {args.output_dir}."
+            )
     else:
         noted_dir = args.output_dir / "Noted"
         images_dir_out = args.output_dir / "Images"

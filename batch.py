@@ -1,6 +1,7 @@
 """Batch processing functions for bright spot detection."""
 
 import shutil
+import sys
 import threading
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -8,8 +9,10 @@ from multiprocessing import Manager
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 from annotation import annotate_image
-from image_io import ensure_output, iter_images
+from image_io import ensure_output, iter_images, USE_OPENCV
 from output import write_csv
 from processing import process_image
 from progress import ProgressRenderer
@@ -42,6 +45,11 @@ def process_batch(
     debug_residual: bool = False,
     debug_max: int = 50,
     residual_only: bool = False,
+    good_images_dir: Optional[Path] = None,
+    reference_diff_percentile: float = 99.5,
+    reference_diff_min: int = 5,
+    debug_reference: bool = False,
+    debug_reference_max: int = 50,
 ) -> Dict[str, object]:
     """Batch process images; returns summary payload for CLI/API.
     
@@ -63,11 +71,48 @@ def process_batch(
         dbscan_eps_mm: DBSCAN distance threshold in mm (default: 2.0mm)
         dbscan_min_samples: DBSCAN minimum samples per cluster (default: 3)
         residual_only: If True, only generate residual debug images (skip annotated images and CSV)
+        good_images_dir: Directory containing GOOD reference images (for reference-residual detector)
+        reference_diff_percentile: Percentile for thresholding difference image (0-100)
+        reference_diff_min: Minimum difference threshold floor
+        debug_reference: Enable debug output for reference-residual method
+        debug_reference_max: Maximum number of images to generate debug artifacts for
     
     Returns:
         Dictionary with processing summary
     """
     ensure_output(output_dir)
+    # Create debug folder for reference-residual detector if debug is enabled
+    print(f"[DEBUG] process_batch: detector={detector}, debug_reference={debug_reference}", file=sys.stderr)
+    if detector == "reference-residual" and debug_reference:
+        debug_dir = output_dir / "debug_reference"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[DEBUG] Debug folder created: {debug_dir}", file=sys.stderr)
+    elif detector == "reference-residual":
+        print(f"[DEBUG] WARNING: detector is reference-residual but debug_reference is {debug_reference}!", file=sys.stderr)
+    
+    # Build reference model ONCE at batch level if using reference-residual detector
+    reference_model = None
+    if detector == "reference-residual" and good_images_dir is not None:
+        if not USE_OPENCV:
+            raise ImportError("Reference residual detector requires OpenCV. Install with: pip install opencv-python")
+        
+        from detection import build_reference_residual_model
+        print(f"[DEBUG] Building reference model ONCE at batch level...", file=sys.stderr)
+        # In debug mode, only use 1 GOOD image
+        if debug_reference:
+            from image_io import iter_images
+            good_image_paths = list(iter_images(good_images_dir))
+            if good_image_paths:
+                # Temporarily limit to first GOOD image for debug
+                print(f"[DEBUG] DEBUG MODE: Using only 1 GOOD image (out of {len(good_image_paths)} available)", file=sys.stderr)
+                # We'll handle this in build_reference_residual_model by passing a limit
+        reference_model = build_reference_residual_model(
+            good_images_dir, crops, resid_blur_ksize,
+            debug=debug_reference, output_dir=output_dir,
+            max_good_images=1 if debug_reference else None  # Only 1 GOOD image in debug mode
+        )
+        print(f"[DEBUG] Reference model built with {len(reference_model)} crop(s): {list(reference_model.keys())}", file=sys.stderr)
+    
     # Only create output directories if not in residual-only mode
     if not residual_only:
         noted_dir = output_dir / "Noted"
@@ -78,9 +123,20 @@ def process_batch(
     image_paths = list(image_paths_override) if image_paths_override is not None else list(iter_images(images_dir))
     if not image_paths:
         raise FileNotFoundError(f"No images found in {images_dir}")
+    
+    # In debug mode, only process the first TEST image
+    if debug_reference and detector == "reference-residual":
+        original_count = len(image_paths)
+        image_paths = image_paths[:1]
+        print(f"[DEBUG] DEBUG MODE: Processing only 1 TEST image (out of {original_count} available)", file=sys.stderr)
 
-    # Determine if we should use parallel processing
+    # In debug mode, disable parallel processing to avoid confusion
     use_parallel = max_workers is None or max_workers > 1
+    if debug_reference:
+        print(f"[DEBUG] DEBUG MODE: Disabling parallel processing for clarity", file=sys.stderr)
+        use_parallel = False
+        max_workers = 1
+    
     if max_workers is None:
         import multiprocessing
         max_workers = multiprocessing.cpu_count()
@@ -118,6 +174,12 @@ def process_batch(
             debug_residual=debug_residual,
             debug_max=debug_max,
             residual_only=residual_only,
+            good_images_dir=good_images_dir,
+            reference_diff_percentile=reference_diff_percentile,
+            reference_diff_min=reference_diff_min,
+            debug_reference=debug_reference,
+            debug_reference_max=debug_reference_max,
+            reference_model=reference_model,
         )
     else:
         # Sequential processing (original implementation)
@@ -146,6 +208,11 @@ def process_batch(
             debug_residual=debug_residual,
             debug_max=debug_max,
             residual_only=residual_only,
+            good_images_dir=good_images_dir,
+            reference_diff_percentile=reference_diff_percentile,
+            reference_diff_min=reference_diff_min,
+            debug_reference=debug_reference,
+            debug_reference_max=debug_reference_max,
         )
 
 
@@ -174,6 +241,12 @@ def _process_batch_sequential(
     debug_residual: bool = False,
     debug_max: int = 50,
     residual_only: bool = False,
+    good_images_dir: Optional[Path] = None,
+    reference_diff_percentile: float = 99.5,
+    reference_diff_min: int = 5,
+    debug_reference: bool = False,
+    debug_reference_max: int = 50,
+    reference_model: Optional[Dict[int, np.ndarray]] = None,
 ) -> Dict[str, object]:
     """Sequential batch processing (original implementation)."""
     if not residual_only:
@@ -184,8 +257,19 @@ def _process_batch_sequential(
     per_image: List[Dict[str, object]] = []
     
     start_time = time.time()
+    
+    # Track if we've processed the first debug image
+    debug_image_processed = False
 
     for idx, path in enumerate(image_paths):
+        # Only enable debug for the first image when debug_reference is True
+        current_debug_reference = debug_reference and not debug_image_processed
+        
+        if current_debug_reference:
+            print(f"\n{'='*80}", file=sys.stderr)
+            print(f"[DEBUG] Processing FIRST image for debug: {path.name}", file=sys.stderr)
+            print(f"{'='*80}", file=sys.stderr)
+        
         img, results = process_image(
             path=path,
             crops=crops,
@@ -207,7 +291,19 @@ def _process_batch_sequential(
             debug_residual=debug_residual,
             debug_max=debug_max,
             output_dir=output_dir,
+            good_images_dir=good_images_dir,
+            reference_diff_percentile=reference_diff_percentile,
+            reference_diff_min=reference_diff_min,
+            debug_reference=current_debug_reference,
+            debug_reference_max=debug_reference_max,
+            reference_model=reference_model,
         )
+        
+        # Mark that we've processed the debug image (only first image gets debug)
+        if current_debug_reference:
+            debug_image_processed = True
+            print(f"[DEBUG] ✓ Debug image processed. Remaining {len(image_paths) - idx - 1} images will skip debug output.", file=sys.stderr)
+        
         bright_total = sum(res.bright_pixels for res in results)
         # Serialize crop results with cluster information
         crops_data = []
@@ -329,6 +425,11 @@ def _process_batch_parallel(
     debug_residual: bool = False,
     debug_max: int = 50,
     residual_only: bool = False,
+    good_images_dir: Optional[Path] = None,
+    reference_diff_percentile: float = 99.5,
+    reference_diff_min: int = 5,
+    debug_reference: bool = False,
+    debug_reference_max: int = 50,
 ) -> Dict[str, object]:
     """Parallel batch processing using multiprocessing."""
     # Prepare arguments for workers
@@ -337,7 +438,9 @@ def _process_batch_parallel(
          module_width_mm, module_height_mm, bright_spot_area_threshold,
          area_unit, dbscan_eps_mm, dbscan_min_samples,
          detector, resid_blur_ksize, resid_percentile, resid_min, resid_morph_ksize,
-         min_blob_area_mm2, debug_residual, debug_max, residual_only)
+         min_blob_area_mm2, debug_residual, debug_max, residual_only,
+         good_images_dir, reference_diff_percentile, reference_diff_min,
+         debug_reference, debug_reference_max)
         for path in image_paths
     ]
     
@@ -470,7 +573,8 @@ def process_image_worker(args: Tuple) -> Dict[str, object]:
                         module_width_mm, module_height_mm, bright_spot_area_threshold,
                         area_unit, dbscan_eps_mm, dbscan_min_samples,
                         detector, resid_blur_ksize, resid_percentile, resid_min, resid_morph_ksize,
-                        min_blob_area_mm2, debug_residual, debug_max, residual_only)
+                        min_blob_area_mm2, debug_residual, debug_max, residual_only,
+                        good_images_dir, reference_diff_percentile, reference_diff_min)
     
     Returns:
         Dictionary with image processing results or error information
@@ -479,7 +583,9 @@ def process_image_worker(args: Tuple) -> Dict[str, object]:
      module_width_mm, module_height_mm, bright_spot_area_threshold,
      area_unit, dbscan_eps_mm, dbscan_min_samples,
      detector, resid_blur_ksize, resid_percentile, resid_min, resid_morph_ksize,
-     min_blob_area_mm2, debug_residual, debug_max, residual_only) = args
+     min_blob_area_mm2, debug_residual, debug_max, residual_only,
+     good_images_dir, reference_diff_percentile, reference_diff_min,
+     debug_reference, debug_reference_max) = args
     try:
         # Memory optimization: only load PIL image if we need to annotate
         # First, do detection without loading full PIL image
@@ -505,6 +611,11 @@ def process_image_worker(args: Tuple) -> Dict[str, object]:
             debug_residual=debug_residual,
             debug_max=debug_max,
             output_dir=output_dir,
+            good_images_dir=good_images_dir,
+            reference_diff_percentile=reference_diff_percentile,
+            reference_diff_min=reference_diff_min,
+            debug_reference=debug_reference,
+            debug_reference_max=debug_reference_max,
         )
         bright_total = sum(res.bright_pixels for res in results)
         
@@ -579,6 +690,11 @@ def process_image_worker(args: Tuple) -> Dict[str, object]:
                     debug_residual=debug_residual,
                     debug_max=debug_max,
                     output_dir=output_dir,
+                    good_images_dir=good_images_dir,
+                    reference_diff_percentile=reference_diff_percentile,
+                    reference_diff_min=reference_diff_min,
+                    debug_reference=debug_reference,
+                    debug_reference_max=debug_reference_max,
                 )
                 annotated = annotate_image(
                     img, results, max_dots=max_dots, show_crops=False
