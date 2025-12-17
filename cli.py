@@ -278,23 +278,30 @@ def main() -> int:
             print("ERROR: Residual detector requires OpenCV. Install with: pip install opencv-python", file=sys.stderr)
             return 1
         
-        # Load crops if available
-        crops = None
+        # Load crops if crops_file is explicitly provided, otherwise use whole image
         crop = None
-        try:
-            crops = load_crops(args.crops_file)
-            if crops and 0 <= args.tune_crop_index < len(crops):
-                crop = crops[args.tune_crop_index]
-            elif crops:
-                crop = crops[0]
-                print(f"Warning: Crop index {args.tune_crop_index} out of range, using first crop", file=sys.stderr)
-        except Exception:
-            pass  # Use default or whole image
+        crops_file_to_use = None
+        if args.crops_file is not None:
+            try:
+                crops = load_crops(args.crops_file)
+                if crops and 0 <= args.tune_crop_index < len(crops):
+                    crop = crops[args.tune_crop_index]
+                    crops_file_to_use = args.crops_file
+                elif crops:
+                    crop = crops[0]
+                    crops_file_to_use = args.crops_file
+                    print(f"Warning: Crop index {args.tune_crop_index} out of range, using first crop", file=sys.stderr)
+            except Exception as exc:
+                print(f"Warning: Failed to load crops from {args.crops_file}: {exc}", file=sys.stderr)
+                print("Using whole image instead.", file=sys.stderr)
+        else:
+            # No crops file specified - use whole image
+            print("No crops file specified - tuning parameters on full image.", file=sys.stderr)
         
         tune_residual_params_interactive(
             image_path=args.tune_residual,
             crop=crop,
-            crops_file=args.crops_file,
+            crops_file=crops_file_to_use,
         )
         return 0
 
