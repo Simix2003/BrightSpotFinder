@@ -73,6 +73,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   'Senza Bright Spot: ${stats.totalImagesWithoutBrightSpot}'),
               Text(
                   'Tasso Medio Successo: ${stats.averageSuccessRate.toStringAsFixed(1)}%'),
+              Text(
+                  'Tasso Medio Bright Spot: ${stats.averageBrightSpotRate.toStringAsFixed(1)}%'),
             ],
           ),
         ),

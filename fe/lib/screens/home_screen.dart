@@ -32,8 +32,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadSettings() async {
     final batchSize = await _storageService.getBatchSize();
+    final savedModelPath = await _storageService.getModelPath();
     setState(() {
       _batchSize = batchSize;
+      _modelPath = savedModelPath;
     });
   }
 
@@ -130,10 +132,11 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: 24),
               ModelPicker(
                 selectedPath: _modelPath,
-                onPathSelected: (path) {
+                onPathSelected: (path) async {
                   setState(() {
                     _modelPath = path;
                   });
+                  await _storageService.saveModelPath(path);
                 },
               ),
               const SizedBox(height: 24),

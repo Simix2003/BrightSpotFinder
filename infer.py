@@ -184,7 +184,11 @@ print("="*60)
 print(f"Total images scanned: {total_images}")
 print(f"Images with bright spot detected: {images_with_bright_spot}")
 print(f"Images without bright spot: {total_images - images_with_bright_spot}")
-print(f"Success rate: {(images_with_bright_spot / total_images * 100):.1f}%" if total_images > 0 else "N/A")
+# Success rate = percentage of images WITHOUT bright spot (good modules)
+success_rate = ((total_images - images_with_bright_spot) / total_images * 100) if total_images > 0 else 0.0
+bright_spot_rate = (images_with_bright_spot / total_images * 100) if total_images > 0 else 0.0
+print(f"Success rate: {success_rate:.1f}%")
+print(f"Bright spot rate: {bright_spot_rate:.1f}%")
 if copy_errors > 0 or save_errors > 0:
     print(f"\nErrors encountered:")
     if copy_errors > 0:

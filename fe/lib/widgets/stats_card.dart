@@ -39,15 +39,15 @@ class StatsCard extends StatelessWidget {
             _buildStatRow(
               'Con Bright Spot',
               stats.imagesWithBrightSpot.toString(),
-              Icons.check_circle,
-              Colors.green,
+              Icons.cancel,
+              Colors.red,
             ),
             const SizedBox(height: 8),
             _buildStatRow(
               'Senza Bright Spot',
               stats.imagesWithoutBrightSpot.toString(),
-              Icons.cancel,
-              Colors.grey,
+              Icons.check_circle,
+              Colors.green,
             ),
             const SizedBox(height: 8),
             _buildStatRow(
@@ -55,6 +55,13 @@ class StatsCard extends StatelessWidget {
               '${stats.successRate.toStringAsFixed(1)}%',
               Icons.trending_up,
               Colors.blue,
+            ),
+            const SizedBox(height: 8),
+            _buildStatRow(
+              'Tasso di Bright Spot',
+              '${stats.brightSpotRate.toStringAsFixed(1)}%',
+              Icons.warning,
+              Colors.orange,
             ),
             if (stats.durationSeconds != null) ...[
               const SizedBox(height: 8),

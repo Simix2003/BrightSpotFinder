@@ -4,6 +4,7 @@ class StorageService {
   static const String _keyServerPort = 'server_port';
   static const String _keyBatchSize = 'batch_size';
   static const String _keyServerUrl = 'server_url';
+  static const String _keyModelPath = 'model_path';
 
   Future<void> saveServerPort(int port) async {
     final prefs = await SharedPreferences.getInstance();
@@ -33,6 +34,20 @@ class StorageService {
   Future<String> getServerUrl() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString(_keyServerUrl) ?? 'http://localhost:5000';
+  }
+
+  Future<void> saveModelPath(String? modelPath) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (modelPath != null) {
+      await prefs.setString(_keyModelPath, modelPath);
+    } else {
+      await prefs.remove(_keyModelPath);
+    }
+  }
+
+  Future<String?> getModelPath() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_keyModelPath);
   }
 }
 

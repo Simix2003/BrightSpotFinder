@@ -48,7 +48,8 @@ class RunStats(BaseModel):
     total_images: int = 0
     images_with_bright_spot: int = 0
     images_without_bright_spot: int = 0
-    success_rate: float = 0.0
+    success_rate: float = 0.0  # Percentage of images WITHOUT bright spot (good modules)
+    bright_spot_rate: float = 0.0  # Percentage of images WITH bright spot (defects)
     batches_completed: int = 0
     batches_total: int = 0
     total_detections: int = 0
@@ -100,5 +101,6 @@ class CombinedStatsResponse(BaseModel):
     total_bright_spots_found: int
     total_images_without_bright_spot: int
     average_success_rate: float
+    average_bright_spot_rate: float
     runs: List[Dict[str, Any]]
 

@@ -187,6 +187,7 @@ def get_combined_stats():
         total_bright_spots = 0
         total_without_spot = 0
         success_rates = []
+        bright_spot_rates = []
         
         for run_id in request_obj.run_ids:
             run_data = data_manager.load_run(run_id)
@@ -204,8 +205,10 @@ def get_combined_stats():
                 total_without_spot += stats.images_without_bright_spot
                 if stats.total_images > 0:
                     success_rates.append(stats.success_rate)
+                    bright_spot_rates.append(stats.bright_spot_rate)
         
         avg_success_rate = sum(success_rates) / len(success_rates) if success_rates else 0.0
+        avg_bright_spot_rate = sum(bright_spot_rates) / len(bright_spot_rates) if bright_spot_rates else 0.0
         
         response = CombinedStatsResponse(
             total_runs=len(runs_data),
@@ -213,6 +216,7 @@ def get_combined_stats():
             total_bright_spots_found=total_bright_spots,
             total_images_without_bright_spot=total_without_spot,
             average_success_rate=avg_success_rate,
+            average_bright_spot_rate=avg_bright_spot_rate,
             runs=runs_data
         )
         

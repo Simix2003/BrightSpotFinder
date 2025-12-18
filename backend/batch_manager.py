@@ -305,7 +305,10 @@ class BatchManager:
             
             # Calculate final statistics
             stats.images_without_bright_spot = stats.total_images - stats.images_with_bright_spot
-            stats.success_rate = (stats.images_with_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
+            # Success rate = percentage of images WITHOUT bright spot (good modules)
+            stats.success_rate = (stats.images_without_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
+            # Bright spot rate = percentage of images WITH bright spot (defects)
+            stats.bright_spot_rate = (stats.images_with_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
             stats.end_time = datetime.now()
             
             if stats.start_time and stats.end_time:
