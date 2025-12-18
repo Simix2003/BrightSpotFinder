@@ -29,3 +29,6 @@ python mirror_dataset.py --dataset "D:\Imix\Lavori\Capgemini\3SUN\BrightSpotFind
 
 # Visualize the dataset
 python visualize_dataset.py --dataset "D:\Imix\Lavori\Capgemini\3SUN\BrightSpotFinder\YoloDataset2"
+
+
+To run the backend compiler to .EXE:
