@@ -1,4 +1,6 @@
 import os
+import statistics
+import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from threading import Lock
@@ -6,6 +8,8 @@ from threading import Lock
 from models import BatchInfo, BatchStatus, RunStats, RunStatus
 from inference_engine import InferenceEngine
 from data_manager import DataManager
+
+logger = logging.getLogger(__name__)
 
 
 class BatchManager:
@@ -25,15 +29,27 @@ class BatchManager:
         batch_size: int
     ) -> Dict[str, Any]:
         """Create a new run and divide images into batches"""
+        logger.info(f"Creating run {run_id} with model: {model_path}")
         # Initialize inference engine
-        inference_engine = InferenceEngine(model_path)
+        try:
+            logger.info(f"Initializing InferenceEngine for run {run_id}")
+            inference_engine = InferenceEngine(model_path)
+            logger.info(f"InferenceEngine initialized successfully for run {run_id}")
+        except Exception as e:
+            error_msg = f"Failed to initialize InferenceEngine: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
         
         # Get list of images
+        logger.info(f"Getting image list from: {input_dir}")
         image_files = inference_engine.get_image_list(input_dir)
         total_images = len(image_files)
+        logger.info(f"Found {total_images} images in input directory")
         
         if total_images == 0:
-            raise ValueError("No images found in input directory")
+            error_msg = "No images found in input directory"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
         
         # Divide into batches
         batches = []
@@ -56,10 +72,23 @@ class BatchManager:
         checkpoint = self.data_manager.load_checkpoint(run_id)
         last_batch_completed = 0
         images_processed = []
+        restored_stats = {
+            'images_with_bright_spot': 0,
+            'images_without_bright_spot': 0,
+            'images_processed_count': 0,
+            'total_detections': 0,
+            'inference_times': []
+        }
         
         if checkpoint:
             last_batch_completed = checkpoint.get('last_batch_completed', 0)
             images_processed = checkpoint.get('images_processed', [])
+            partial_stats = checkpoint.get('partial_stats', {})
+            restored_stats['images_with_bright_spot'] = partial_stats.get('images_with_bright_spot', 0)
+            restored_stats['images_without_bright_spot'] = partial_stats.get('images_without_bright_spot', 0)
+            restored_stats['images_processed_count'] = partial_stats.get('images_processed_count', len(images_processed))
+            restored_stats['total_detections'] = partial_stats.get('total_detections', 0)
+            restored_stats['inference_times'] = partial_stats.get('inference_times', [])
             print(f"Found checkpoint for run {run_id}, resuming from batch {last_batch_completed + 1}")
         
         # Create run data structure
@@ -76,10 +105,16 @@ class BatchManager:
             'total_images': total_images,
             'last_batch_completed': last_batch_completed,
             'images_processed': images_processed,
+            'inference_times': restored_stats['inference_times'].copy(),  # Restore inference times from checkpoint
             'stats': RunStats(
                 total_images=total_images,
                 batches_total=total_batches,
                 batches_completed=last_batch_completed,
+                images_with_bright_spot=restored_stats['images_with_bright_spot'],  # Restore from checkpoint
+                images_without_bright_spot=restored_stats['images_without_bright_spot'],  # Restore from checkpoint
+                images_processed_count=restored_stats['images_processed_count'],  # Restore from checkpoint
+                total_detections=restored_stats['total_detections'],  # Restore from checkpoint
+                median_inference_time_seconds=statistics.median(restored_stats['inference_times']) if restored_stats['inference_times'] else None,  # Calculate median from restored times
                 start_time=datetime.now()
             ),
             'status': RunStatus.RUNNING if last_batch_completed == 0 else RunStatus.RUNNING,
@@ -144,12 +179,14 @@ class BatchManager:
                 
                 try:
                     # Process image (outside lock for performance)
+                    logger.debug(f"Processing image: {image_name}")
                     image_result = inference_engine.process_image(
                         image_path,
                         confidence_threshold=confidence,
                         inference_conf=0.3,  # Lower threshold for inference, filter later
                         imgsz=1024
                     )
+                    logger.debug(f"Image {image_name} processed: has_bright_spot={image_result.has_bright_spot}")
                     
                     # Save annotated image if bright spot detected
                     has_spot = image_result.has_bright_spot
@@ -176,19 +213,40 @@ class BatchManager:
                         # Update total images count for progress calculation
                         run_data['stats'].total_images = run_data['total_images']
                         
+                        # Track inference time
+                        inference_time = image_result.inference_time_seconds
+                        if inference_time is not None:
+                            run_data['inference_times'].append(inference_time)
+                        
+                        # Increment images_processed_count
+                        run_data['stats'].images_processed_count += 1
+                        
                         # Update statistics immediately after each image
                         if has_spot:
                             run_data['stats'].images_with_bright_spot += 1
                             run_data['stats'].total_detections += detections_count
+                        else:
+                            # Increment images_without_bright_spot (don't calculate as total - with)
+                            run_data['stats'].images_without_bright_spot += 1
+                        
+                        # Calculate median inference time
+                        stats = run_data['stats']
+                        if run_data['inference_times']:
+                            stats.median_inference_time_seconds = statistics.median(run_data['inference_times'])
+                        else:
+                            stats.median_inference_time_seconds = None
                         
                         # Calculate and update rates after each image
-                        stats = run_data['stats']
-                        stats.images_without_bright_spot = stats.total_images - stats.images_with_bright_spot
-                        stats.success_rate = (stats.images_without_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
-                        stats.bright_spot_rate = (stats.images_with_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
+                        processed_count = stats.images_processed_count
+                        if processed_count > 0:
+                            stats.success_rate = (stats.images_without_bright_spot / processed_count * 100)
+                            stats.bright_spot_rate = (stats.images_with_bright_spot / processed_count * 100)
+                        else:
+                            stats.success_rate = 0.0
+                            stats.bright_spot_rate = 0.0
                     
                 except Exception as e:
-                    print(f"Error processing image {image_path}: {e}")
+                    logger.error(f"Error processing image {image_path}: {e}", exc_info=True)
                     # Continue with next image
                     continue
             
@@ -211,11 +269,15 @@ class BatchManager:
                 run_data['stats'].batches_completed = batch_id
                 run_data['last_batch_completed'] = batch_id
                 
-                # Ensure rates are up to date
+                # Ensure rates are up to date (use processed_count, not total_images)
                 stats = run_data['stats']
-                stats.images_without_bright_spot = stats.total_images - stats.images_with_bright_spot
-                stats.success_rate = (stats.images_without_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
-                stats.bright_spot_rate = (stats.images_with_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
+                processed_count = stats.images_processed_count
+                if processed_count > 0:
+                    stats.success_rate = (stats.images_without_bright_spot / processed_count * 100)
+                    stats.bright_spot_rate = (stats.images_with_bright_spot / processed_count * 100)
+                else:
+                    stats.success_rate = 0.0
+                    stats.bright_spot_rate = 0.0
                 
                 # Save checkpoint
                 self._save_checkpoint(run_id, run_data)
@@ -239,7 +301,7 @@ class BatchManager:
                             break
                     if batch:
                         batch['status'] = BatchStatus.FAILED.value
-            print(f"Error processing batch {batch_id} for run {run_id}: {e}")
+            logger.error(f"Error processing batch {batch_id} for run {run_id}: {e}", exc_info=True)
             raise
     
     def _save_checkpoint(self, run_id: str, run_data: Dict[str, Any]):
@@ -250,8 +312,11 @@ class BatchManager:
             'images_processed': run_data['images_processed'],
             'partial_stats': {
                 'images_with_bright_spot': run_data['stats'].images_with_bright_spot,
+                'images_without_bright_spot': run_data['stats'].images_without_bright_spot,
+                'images_processed_count': run_data['stats'].images_processed_count,
                 'total_detections': run_data['stats'].total_detections,
-                'batches_completed': run_data['stats'].batches_completed
+                'batches_completed': run_data['stats'].batches_completed,
+                'inference_times': run_data.get('inference_times', [])  # Save inference times for median calculation
             }
         }
         self.data_manager.save_checkpoint(run_id, checkpoint_data)
@@ -303,6 +368,12 @@ class BatchManager:
             total_images_processed = len(run_data['images_processed'])
             stats.total_images = run_data['total_images']  # Ensure this is set
             
+            # Calculate elapsed time from start_time to now
+            if stats.start_time:
+                elapsed_seconds = (datetime.now() - stats.start_time).total_seconds()
+                # Note: We don't store elapsed_seconds in stats, it's calculated on-the-fly
+                # The frontend will calculate it from start_time
+            
             return {
                 'run_id': run_id,
                 'status': run_data['status'],
@@ -321,12 +392,21 @@ class BatchManager:
             run_data = self.active_runs[run_id]
             stats = run_data['stats']
             
-            # Calculate final statistics
-            stats.images_without_bright_spot = stats.total_images - stats.images_with_bright_spot
-            # Success rate = percentage of images WITHOUT bright spot (good modules)
-            stats.success_rate = (stats.images_without_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
-            # Bright spot rate = percentage of images WITH bright spot (defects)
-            stats.bright_spot_rate = (stats.images_with_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
+            # Calculate final statistics (use processed_count, not total_images)
+            processed_count = stats.images_processed_count
+            if processed_count > 0:
+                # Success rate = percentage of images WITHOUT bright spot (good modules)
+                stats.success_rate = (stats.images_without_bright_spot / processed_count * 100)
+                # Bright spot rate = percentage of images WITH bright spot (defects)
+                stats.bright_spot_rate = (stats.images_with_bright_spot / processed_count * 100)
+            else:
+                stats.success_rate = 0.0
+                stats.bright_spot_rate = 0.0
+            
+            # Calculate final median inference time
+            if run_data.get('inference_times'):
+                stats.median_inference_time_seconds = statistics.median(run_data['inference_times'])
+            
             stats.end_time = datetime.now()
             
             if stats.start_time and stats.end_time:

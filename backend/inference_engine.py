@@ -1,20 +1,60 @@
 from ultralytics import YOLO
 import cv2
 import os
+import sys
 from pathlib import Path
 import shutil
 import time
+import logging
 from typing import List, Tuple, Optional
 from models import ImageResult, DetectionBox
+
+# Set up logging
+# Handle both script execution and PyInstaller exe execution
+if getattr(sys, 'frozen', False):
+    # Running as compiled exe
+    base_dir = os.path.dirname(sys.executable)
+else:
+    # Running as script
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.dirname(base_dir)  # Go up one level from backend/
+
+log_dir = os.path.join(base_dir, 'logs')
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, 'inference_engine.log')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()  # Also log to console
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 class InferenceEngine:
     def __init__(self, model_path: str):
         """Initialize the inference engine with a YOLO model"""
+        logger.info(f"Initializing InferenceEngine with model path: {model_path}")
+        
+        # Check if model file exists
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-        self.model = YOLO(model_path)
+            error_msg = f"Model file not found: {model_path}"
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
+        
+        logger.info(f"Model file found. Attempting to load YOLO model...")
+        try:
+            self.model = YOLO(model_path)
+            logger.info("YOLO model loaded successfully")
+        except Exception as e:
+            error_msg = f"Failed to load YOLO model from {model_path}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
+        
         self.model_path = model_path
+        logger.info("InferenceEngine initialized successfully")
     
     def process_image(
         self,
@@ -38,8 +78,19 @@ class InferenceEngine:
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"Image file not found: {image_path}")
         
+        # Measure inference time
+        inference_start_time = time.time()
         # Run inference
-        results = self.model(image_path, conf=inference_conf, imgsz=imgsz)
+        try:
+            logger.debug(f"Running inference on image: {image_path}")
+            results = self.model(image_path, conf=inference_conf, imgsz=imgsz)
+            inference_end_time = time.time()
+            inference_time_seconds = inference_end_time - inference_start_time
+            logger.debug(f"Inference completed in {inference_time_seconds:.2f}s")
+        except Exception as e:
+            error_msg = f"Error during YOLO inference on {image_path}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            raise RuntimeError(error_msg) from e
         
         # Load image to get dimensions
         img = cv2.imread(image_path)
@@ -74,7 +125,8 @@ class InferenceEngine:
             image_name=image_name,
             has_bright_spot=has_bright_spot,
             detections=detections,
-            processed=True
+            processed=True,
+            inference_time_seconds=inference_time_seconds
         )
     
     def save_annotated_image(

@@ -18,3 +18,7 @@ Models/
 .tar.zstd
 backend/build/BrightSpotDetectorServer/
 backend/dist/BrightSpotDetectorServer.exe
+
+# Log files
+logs/
+*.log

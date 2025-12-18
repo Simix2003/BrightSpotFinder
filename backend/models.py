@@ -33,6 +33,7 @@ class ImageResult(BaseModel):
     has_bright_spot: bool
     detections: List[DetectionBox]
     processed: bool = False
+    inference_time_seconds: Optional[float] = None
 
 
 class BatchInfo(BaseModel):
@@ -56,6 +57,8 @@ class RunStats(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     duration_seconds: Optional[float] = None
+    median_inference_time_seconds: Optional[float] = None
+    images_processed_count: int = 0
 
 
 class RunData(BaseModel):

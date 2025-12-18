@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import threading
 import time
+import logging
+import os
 from typing import Dict, Any
 
 from models import (
@@ -10,6 +12,30 @@ from models import (
 )
 from data_manager import DataManager
 from batch_manager import BatchManager
+
+# Set up logging
+# Handle both script execution and PyInstaller exe execution
+import sys
+if getattr(sys, 'frozen', False):
+    # Running as compiled exe
+    base_dir = os.path.dirname(sys.executable)
+else:
+    # Running as script
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.dirname(base_dir)  # Go up one level from backend/
+
+log_dir = os.path.join(base_dir, 'logs')
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, 'server.log')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()  # Also log to console
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for Flutter app
@@ -24,27 +50,34 @@ processing_threads: Dict[str, threading.Thread] = {}
 
 def process_run(run_id: str):
     """Background thread to process a run"""
+    logger.info(f"Starting processing for run {run_id}")
     try:
         run_data = batch_manager.active_runs.get(run_id)
         if not run_data:
+            logger.warning(f"Run {run_id} not found in active_runs")
             return
         
         total_batches = run_data['stats'].batches_total
         last_batch = run_data['last_batch_completed']
+        logger.info(f"Run {run_id}: Processing {total_batches - last_batch} batches (starting from batch {last_batch + 1})")
         
         # Process remaining batches
         for batch_id in range(last_batch + 1, total_batches + 1):
             try:
+                logger.info(f"Run {run_id}: Processing batch {batch_id}/{total_batches}")
                 batch_manager.process_batch(run_id, batch_id)
+                logger.info(f"Run {run_id}: Batch {batch_id} completed successfully")
             except Exception as e:
-                print(f"Error in batch {batch_id}: {e}")
+                logger.error(f"Run {run_id}: Error in batch {batch_id}: {e}", exc_info=True)
                 # Continue with next batch
         
         # Mark run as completed
+        logger.info(f"Run {run_id}: All batches completed, marking as completed")
         batch_manager.complete_run(run_id)
+        logger.info(f"Run {run_id}: Successfully completed")
         
     except Exception as e:
-        print(f"Error processing run {run_id}: {e}")
+        logger.error(f"Run {run_id}: Error processing run: {e}", exc_info=True)
         # Mark as failed
         with batch_manager.lock:
             if run_id in batch_manager.active_runs:
@@ -62,20 +95,30 @@ def start_processing():
     """Start a new processing run"""
     try:
         data = request.json
+        logger.info(f"Received start request: {data}")
         start_request = StartRequest(**data)
         
         # Validate paths
         import os
+        logger.info(f"Validating model path: {start_request.model_path}")
         if not os.path.exists(start_request.model_path):
-            return jsonify({'error': 'Model file not found'}), 400
+            error_msg = f'Model file not found: {start_request.model_path}'
+            logger.error(error_msg)
+            return jsonify({'error': error_msg}), 400
+        
+        logger.info(f"Validating input directory: {start_request.input_dir}")
         if not os.path.exists(start_request.input_dir):
-            return jsonify({'error': 'Input directory not found'}), 400
+            error_msg = f'Input directory not found: {start_request.input_dir}'
+            logger.error(error_msg)
+            return jsonify({'error': error_msg}), 400
         
         # Generate run ID
         run_id = data_manager.generate_run_id()
+        logger.info(f"Generated run_id: {run_id}")
         
         # Create run
         try:
+            logger.info(f"Creating run {run_id} with model: {start_request.model_path}")
             batch_manager.create_run(
                 run_id=run_id,
                 model_path=start_request.model_path,
@@ -85,14 +128,19 @@ def start_processing():
                 run_name=start_request.run_name,
                 batch_size=start_request.batch_size
             )
+            logger.info(f"Run {run_id} created successfully")
         except Exception as e:
-            return jsonify({'error': str(e)}), 400
+            error_msg = f"Failed to create run: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return jsonify({'error': error_msg}), 400
         
         # Start processing in background thread
+        logger.info(f"Starting background thread for run {run_id}")
         thread = threading.Thread(target=process_run, args=(run_id,))
         thread.daemon = True
         thread.start()
         processing_threads[run_id] = thread
+        logger.info(f"Background thread started for run {run_id}")
         
         return jsonify({
             'run_id': run_id,
@@ -100,7 +148,9 @@ def start_processing():
         }), 200
         
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        error_msg = f"Unexpected error in start_processing: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return jsonify({'error': error_msg}), 500
 
 
 @app.route('/api/status/<run_id>', methods=['GET'])
@@ -266,7 +316,13 @@ def get_batch_status(run_id: str):
 
 
 if __name__ == '__main__':
+    logger.info("="*60)
+    logger.info("Starting BrightSpot Detector Server...")
+    logger.info("Server will be available at http://localhost:5000")
+    logger.info(f"Logs will be written to: {log_file}")
+    logger.info("="*60)
     print("Starting BrightSpot Detector Server...")
     print("Server will be available at http://localhost:5000")
+    print(f"Logs will be written to: {log_file}")
     app.run(host='0.0.0.0', port=5000, debug=False)
 
