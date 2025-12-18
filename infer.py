@@ -3,6 +3,7 @@ import cv2
 import os
 from pathlib import Path
 import shutil
+import time
 
 MODEL_PATH = "Models/yolov8n_residual/weights/best.pt"
 #IMAGE_DIR = "D:/Imix/Lavori/Capgemini/3SUN/Immagini/IMAGE/TEST"
@@ -21,6 +22,8 @@ model = YOLO(MODEL_PATH)
 # Statistics
 total_images = 0
 images_with_bright_spot = 0
+copy_errors = 0
+save_errors = 0
 
 for img_name in os.listdir(IMAGE_DIR):
     if not img_name.lower().endswith((".png", ".jpg", ".jpeg")):
@@ -60,9 +63,40 @@ for img_name in os.listdir(IMAGE_DIR):
     if has_bright_spot:
         images_with_bright_spot += 1
         
-        # Copy original image to Image folder
+        # Copy original image to Image folder with retry logic
         dst_img_path = os.path.join(images_dir, img_name)
-        shutil.copy2(img_path, dst_img_path)
+        copy_success = False
+        max_retries = 3
+        retry_delay = 0.5  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                # Check if destination file exists and is locked
+                if os.path.exists(dst_img_path):
+                    # Try to remove it first if it exists
+                    try:
+                        os.remove(dst_img_path)
+                    except PermissionError:
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            raise
+                
+                shutil.copy2(img_path, dst_img_path)
+                copy_success = True
+                break
+            except PermissionError as e:
+                if attempt < max_retries - 1:
+                    print(f"[WARN] Permission denied copying {img_name}, retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                else:
+                    print(f"[ERROR] Failed to copy {img_name} after {max_retries} attempts: {e}")
+                    copy_errors += 1
+            except Exception as e:
+                print(f"[ERROR] Unexpected error copying {img_name}: {e}")
+                copy_errors += 1
+                break
         
         # Create annotated image with bounding boxes drawn
         annotated_img = img.copy()
@@ -97,11 +131,49 @@ for img_name in os.listdir(IMAGE_DIR):
                 2
             )
         
-        # Save annotated image to Noted folder
+        # Save annotated image to Noted folder with error handling
         noted_img_path = os.path.join(noted_dir, img_name)
-        cv2.imwrite(noted_img_path, annotated_img)
+        save_success = False
         
-        print(f"[✓] {img_name} - {len(high_conf_boxes)} bright spot(s) detected")
+        for attempt in range(max_retries):
+            try:
+                # Check if destination file exists and is locked
+                if os.path.exists(noted_img_path):
+                    try:
+                        os.remove(noted_img_path)
+                    except PermissionError:
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            raise
+                
+                if cv2.imwrite(noted_img_path, annotated_img):
+                    save_success = True
+                    break
+                else:
+                    raise Exception("cv2.imwrite returned False")
+            except PermissionError as e:
+                if attempt < max_retries - 1:
+                    print(f"[WARN] Permission denied saving {img_name}, retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_delay)
+                else:
+                    print(f"[ERROR] Failed to save annotated {img_name} after {max_retries} attempts: {e}")
+                    save_errors += 1
+            except Exception as e:
+                print(f"[ERROR] Unexpected error saving annotated {img_name}: {e}")
+                save_errors += 1
+                break
+        
+        if copy_success and save_success:
+            print(f"[✓] {img_name} - {len(high_conf_boxes)} bright spot(s) detected")
+        else:
+            status_parts = []
+            if not copy_success:
+                status_parts.append("copy failed")
+            if not save_success:
+                status_parts.append("save failed")
+            print(f"[⚠] {img_name} - {len(high_conf_boxes)} bright spot(s) detected, but {' and '.join(status_parts)}")
     else:
         print(f"[✗] {img_name} - No bright spot detected (confidence > 50%)")
 
@@ -113,6 +185,12 @@ print(f"Total images scanned: {total_images}")
 print(f"Images with bright spot detected: {images_with_bright_spot}")
 print(f"Images without bright spot: {total_images - images_with_bright_spot}")
 print(f"Success rate: {(images_with_bright_spot / total_images * 100):.1f}%" if total_images > 0 else "N/A")
+if copy_errors > 0 or save_errors > 0:
+    print(f"\nErrors encountered:")
+    if copy_errors > 0:
+        print(f"  Copy errors: {copy_errors}")
+    if save_errors > 0:
+        print(f"  Save errors: {save_errors}")
 print("="*60)
 print(f"\nOutput saved to:")
 print(f"  Original images: {images_dir}")
