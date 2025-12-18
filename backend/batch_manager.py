@@ -152,18 +152,21 @@ class BatchManager:
                     )
                     
                     # Save annotated image if bright spot detected
-                    if image_result.has_bright_spot:
+                    has_spot = image_result.has_bright_spot
+                    detections_count = len(image_result.detections) if has_spot else 0
+                    
+                    if has_spot:
                         inference_engine.save_annotated_image(
                             image_path,
                             image_result,
                             output_dir
                         )
                         batch_images_with_spot += 1
-                        batch_total_detections += len(image_result.detections)
+                        batch_total_detections += detections_count
                     
                     batch_results.append(image_result)
                     
-                    # Update with lock
+                    # Update with lock - update statistics immediately after each image
                     with self.lock:
                         if run_id not in self.active_runs:
                             raise ValueError(f"Run {run_id} no longer exists")
@@ -172,6 +175,17 @@ class BatchManager:
                         batch['images_processed'] += 1
                         # Update total images count for progress calculation
                         run_data['stats'].total_images = run_data['total_images']
+                        
+                        # Update statistics immediately after each image
+                        if has_spot:
+                            run_data['stats'].images_with_bright_spot += 1
+                            run_data['stats'].total_detections += detections_count
+                        
+                        # Calculate and update rates after each image
+                        stats = run_data['stats']
+                        stats.images_without_bright_spot = stats.total_images - stats.images_with_bright_spot
+                        stats.success_rate = (stats.images_without_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
+                        stats.bright_spot_rate = (stats.images_with_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
                     
                 except Exception as e:
                     print(f"Error processing image {image_path}: {e}")
@@ -193,11 +207,15 @@ class BatchManager:
                     batch['status'] = BatchStatus.COMPLETED.value
                     batch['end_time'] = datetime.now()
                 
-                # Update run statistics
-                run_data['stats'].images_with_bright_spot += batch_images_with_spot
-                run_data['stats'].total_detections += batch_total_detections
+                # Update batch completion status (statistics already updated after each image)
                 run_data['stats'].batches_completed = batch_id
                 run_data['last_batch_completed'] = batch_id
+                
+                # Ensure rates are up to date
+                stats = run_data['stats']
+                stats.images_without_bright_spot = stats.total_images - stats.images_with_bright_spot
+                stats.success_rate = (stats.images_without_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
+                stats.bright_spot_rate = (stats.images_with_bright_spot / stats.total_images * 100) if stats.total_images > 0 else 0.0
                 
                 # Save checkpoint
                 self._save_checkpoint(run_id, run_data)
